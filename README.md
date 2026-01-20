@@ -52,6 +52,36 @@ iterators have been translated into
 instances, and can be consumed with the corresponding
 `for await (const x of y) { ... }` syntax.
 
+### Authentication
+
+Logging in is required for many features (like search, DMs, and some profile details).
+
+```ts
+await scraper.login(
+  'username',
+  'password',
+  'email', // optional
+  'twoFactorSecret' // optional, for 2FA
+);
+```
+
+### Direct Messages
+
+This library supports retrieving Direct Messages (DMs) for logged-in accounts.
+
+```ts
+// Get the DM inbox
+const inbox = await scraper.getDmInbox();
+
+// Get a specific conversation
+const conversation = await scraper.getDmConversation('conversation_id');
+
+// Iterate over messages in a conversation
+for await (const message of scraper.getDmMessages('conversation_id')) {
+  console.log(message.text);
+}
+```
+
 ### Browser usage
 
 This package directly invokes the Twitter API, which does not have permissive
@@ -265,6 +295,7 @@ dependencies.
 
 - `yarn build`: Builds the project into the `dist` folder
 - `yarn test`: Runs the package tests (see [Testing](#testing) first)
+- `yarn docs:generate`: Generates the documentation
 
 Run `yarn help` for general `yarn` usage information.
 
