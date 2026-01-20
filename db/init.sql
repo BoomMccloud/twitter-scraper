@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     query TEXT NOT NULL, -- 'elonmusk', 'mars'
     interval_minutes INTEGER DEFAULT 15,
     last_run_at TIMESTAMP WITH TIME ZONE,
+    next_run_at TIMESTAMP WITH TIME ZONE,
     active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

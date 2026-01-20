@@ -7,15 +7,15 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
-const pool = new Pool({
+export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
 // Helper to pause execution
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function upsertTweet(tweet: Tweet, criteria: string, client: any) {
+export async function upsertTweet(tweet: Tweet, criteria: string, client: any) {
   try {
     const tweetId = tweet.id;
     const body = JSON.stringify(tweet);
@@ -43,8 +43,8 @@ async function upsertTweet(tweet: Tweet, criteria: string, client: any) {
   }
 }
 
-async function processJob(scraper: Scraper, job: any) {
-  const client = await pool.connect();
+export async function processJob(scraper: Scraper, job: any, poolInstance: Pool = pool) {
+  const client = await poolInstance.connect();
   try {
     console.log(`[Job ${job.job_id}] Starting ${job.type}: ${job.query}`);
     
@@ -67,19 +67,37 @@ async function processJob(scraper: Scraper, job: any) {
 
     console.log(`[Job ${job.job_id}] Finished. Upserted ${count} tweets.`);
 
-    // Update last_run_at
-    await client.query('UPDATE jobs SET last_run_at = NOW() WHERE job_id = $1', [job.job_id]);
+    // Calculate next run time: Random between 1 hour (60 mins) and 2 hours (120 mins)
+    const nextIntervalMinutes = Math.floor(Math.random() * 60) + 60;
+    
+    // Update last_run_at and next_run_at
+    await client.query(`
+      UPDATE jobs 
+      SET last_run_at = NOW(),
+          next_run_at = NOW() + ($2 || ' minutes')::interval
+      WHERE job_id = $1
+    `, [job.job_id, nextIntervalMinutes]);
+    
+    console.log(`[Job ${job.job_id}] Rescheduled in ${nextIntervalMinutes} minutes.`);
 
   } catch (err) {
     console.error(`[Job ${job.job_id}] Failed:`, err);
-    // Update last_run_at even on failure to prevent immediate retry
-    await client.query('UPDATE jobs SET last_run_at = NOW() WHERE job_id = $1', [job.job_id]);
+    // On failure, retry sooner? Or same schedule? 
+    // For now, let's stick to the schedule to avoid loops, or maybe retry in 15 mins.
+    // Let's use a shorter fixed retry of 15 mins on failure.
+    const retryMinutes = 15;
+    await client.query(`
+      UPDATE jobs 
+      SET last_run_at = NOW(),
+          next_run_at = NOW() + ($2 || ' minutes')::interval
+      WHERE job_id = $1
+    `, [job.job_id, retryMinutes]);
   } finally {
     client.release();
   }
 }
 
-async function runMonitor() {
+export async function runMonitor(poolInstance: Pool = pool) {
   // Initialize Scraper with CycleTLS
   // Note: xClientTransactionId requires Node.js 22+ (ArrayBuffer.transfer)
   const scraper = new Scraper({
@@ -120,16 +138,16 @@ async function runMonitor() {
     }
 
     while (true) {
-      const client = await pool.connect();
+      const client = await poolInstance.connect();
       let jobs = [];
       try {
-        // Fetch due jobs
-        // We look for jobs where last_run_at is null OR it's been longer than interval_minutes
+        // Fetch due jobs based on next_run_at
+        // If next_run_at is NULL, it runs immediately (first run)
         const res = await client.query(`
           SELECT * FROM jobs 
           WHERE active = true 
-          AND (last_run_at IS NULL OR last_run_at < NOW() - (interval_minutes || ' minutes')::interval)
-          ORDER BY last_run_at ASC NULLS FIRST
+          AND (next_run_at IS NULL OR next_run_at <= NOW())
+          ORDER BY next_run_at ASC NULLS FIRST
           LIMIT 1
         `);
         jobs = res.rows;
@@ -139,15 +157,17 @@ async function runMonitor() {
 
       if (jobs.length > 0) {
         const job = jobs[0];
-        await processJob(scraper, job);
+        await processJob(scraper, job, poolInstance);
         
-        // Sleep a bit between jobs to be nice to Twitter
-        const sleepTime = Math.floor(Math.random() * 5000) + 5000;
-        await sleep(sleepTime); 
+        // Cool down: Sleep between 5 and 30 seconds
+        const sleepTime = Math.floor(Math.random() * 25000) + 5000;
+        console.log(`Job finished. Sleeping for ${Math.floor(sleepTime / 1000)} seconds...`);
+        await sleepMs(sleepTime); 
       } else {
-        const sleepTime = Math.floor(Math.random() * 180000) + 60000;
+        // Idle sleep: Between 10 and 15 minutes
+        const sleepTime = Math.floor(Math.random() * 300000) + 600000;
         console.log(`No jobs due. Sleeping for ${Math.floor(sleepTime / 1000)} seconds...`);
-        await sleep(sleepTime);
+        await sleepMs(sleepTime);
       }
     }
 
@@ -155,11 +175,18 @@ async function runMonitor() {
     console.error('Fatal error in monitor:', err);
     process.exit(1);
   } finally {
-    await pool.end();
+    await poolInstance.end();
     cycleTLSExit();
   }
 }
 
-if (require.main === module) {
+import { fileURLToPath } from 'url';
+
+// ... (rest of imports)
+
+// ... (functions)
+
+if (import.meta.url === `file://${process.argv[1]}`) {
   runMonitor();
 }
+
